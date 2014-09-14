@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"go/build"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/golang/gddo/gosrc"
 
 	"code.google.com/p/go.tools/go/loader"
 	"code.google.com/p/go.tools/godoc/vfs"
@@ -32,6 +34,21 @@ func init() {
 	)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// Check that we have the '-i' flag.
+	cmd := exec.Command("go", "help", "build")
+	o, err := cmd.Output()
+	if err != nil {
+		log.Fatal(err)
+	}
+	usage := strings.Split(string(o), "\n")[0] // The usage is on the first line.
+	matched, err := regexp.MatchString("-i", usage)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !matched {
+		log.Fatal("'go build' does not have the '-i' flag. Please upgrade to go1.3+.")
 	}
 }
 
@@ -309,6 +326,10 @@ func treePath(path string) graph.TreePath {
 	return graph.TreePath(fmt.Sprintf("./%s", path))
 }
 
+// allowErrorsInGraph is whether the grapher should continue after
+// encountering "reasonably common" errors (such as compile errors).
+var allowErrorsInGraph = true
+
 func doGraph(pkg *build.Package) (*gog.Output, error) {
 	importPath := pkg.ImportPath
 
@@ -340,24 +361,39 @@ func doGraph(pkg *build.Package) (*gog.Output, error) {
 	}
 
 	if !loaderConfig.SourceImports {
-		tmpfile, err := ioutil.TempFile("", filepath.Base(importPath))
-		if err != nil {
-			return nil, err
+		imports := map[string]struct{}{}
+		for _, imp := range pkg.Imports {
+			imports[imp] = struct{}{}
+		}
+		for _, imp := range pkg.TestImports {
+			imports[imp] = struct{}{}
+		}
+		for _, imp := range pkg.XTestImports {
+			imports[imp] = struct{}{}
 		}
 
-		// Install pkg.
-		cmd := exec.Command("go", "build", "-o", tmpfile.Name(), "-i", "-v", importPath)
-		cmd.Env = config.env()
-		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-		log.Printf("Install %q: %v (env vars: %v)", importPath, cmd.Args, cmd.Env)
-		if err := cmd.Run(); err != nil {
-			return nil, err
-		}
-		if err := tmpfile.Close(); err != nil {
-			return nil, err
-		}
-		if err := os.Remove(tmpfile.Name()); err != nil {
-			return nil, err
+		for imp, _ := range imports {
+			if imp == "C" {
+				continue
+			}
+			if gosrc.IsGoRepoPath(imp) {
+				// Optimization: don't bother installing builtin
+				// packages because they're already installed. (But if
+				// we accidentally install one, it's OK and not going
+				// to cause any problems.)
+				continue
+			}
+			cmd := exec.Command("go", "install", "-v", imp)
+			cmd.Env = config.env()
+			cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+			log.Printf("Install %q: %v (env vars: %v)", importPath, cmd.Args, cmd.Env)
+			if err := cmd.Run(); err != nil {
+				if allowErrorsInGraph {
+					log.Printf("Warning: failed to install package %q (command %v, env vars %v): %s. Continuing...", imp, cmd.Args, cmd.Env)
+				} else {
+					return nil, err
+				}
+			}
 		}
 	}
 

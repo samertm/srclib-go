@@ -221,9 +221,10 @@ func (g *Grapher) Graph(pkgInfo *loader.PackageInfo) error {
 		g.addRef(ref)
 	}
 
-	// Find refs to current package in the "package" clause in each file.
+	// Create a ref that represent the name of the package ("package foo")
+	// for each file.
 	for _, f := range pkgInfo.Files {
-		pkgObj := types.NewPkgName(f.Name.Pos(), pkgInfo.Pkg, pkgInfo.Pkg.Name())
+		pkgObj := types.NewPkgName(f.Name.Pos(), pkgInfo.Pkg, pkgInfo.Pkg.Name(), pkgInfo.Pkg)
 		ref, err := g.NewRef(f.Name, pkgObj)
 		if err != nil {
 			return err
@@ -296,7 +297,7 @@ func (g *Grapher) makeDefInfo(obj types.Object) (*DefKey, *defInfo, error) {
 			return &DefKey{"builtin", []string{obj.Name()}}, &defInfo{pkgscope: false, exported: true}, nil
 		}
 	case *types.PkgName:
-		return &DefKey{obj.Pkg().Path(), []string{}}, &defInfo{pkgscope: false, exported: true}, nil
+		return &DefKey{obj.Imported().Path(), []string{}}, &defInfo{pkgscope: false, exported: true}, nil
 	case *types.Const:
 		var pkg string
 		if obj.Pkg() == nil {
